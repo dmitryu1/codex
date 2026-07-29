@@ -18,7 +18,7 @@ const fn default_enabled() -> bool {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
 #[schemars(deny_unknown_fields)]
 pub struct SkillConfig {
-    /// Path-based selector.
+    /// Absolute path selector. `*` matches any sequence of characters, including path separators.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<AbsolutePathBuf>,
     /// Name-based selector.
@@ -100,10 +100,16 @@ impl SkillConfigRules {
         for entry in &self.entries {
             match &entry.selector {
                 SkillConfigRuleSelector::Path(path) => {
-                    if entry.enabled {
-                        disabled_paths.remove(path);
+                    if path_contains_wildcard(path) {
+                        for (_, skill_path) in skills
+                            .clone()
+                            .into_iter()
+                            .filter(|(_, skill_path)| wildcard_path_matches(path, skill_path))
+                        {
+                            set_skill_enabled(&mut disabled_paths, skill_path, entry.enabled);
+                        }
                     } else {
-                        disabled_paths.insert(path.clone());
+                        set_skill_enabled(&mut disabled_paths, path, entry.enabled);
                     }
                 }
                 SkillConfigRuleSelector::Name(name) => {
@@ -111,11 +117,7 @@ impl SkillConfigRules {
                         if skill_name != name {
                             continue;
                         }
-                        if entry.enabled {
-                            disabled_paths.remove(path);
-                        } else {
-                            disabled_paths.insert(path.clone());
-                        }
+                        set_skill_enabled(&mut disabled_paths, path, entry.enabled);
                     }
                 }
             }
@@ -123,6 +125,55 @@ impl SkillConfigRules {
 
         disabled_paths
     }
+}
+
+fn set_skill_enabled(
+    disabled_paths: &mut HashSet<AbsolutePathBuf>,
+    path: &AbsolutePathBuf,
+    enabled: bool,
+) {
+    if enabled {
+        disabled_paths.remove(path);
+    } else {
+        disabled_paths.insert(path.clone());
+    }
+}
+
+fn path_contains_wildcard(path: &AbsolutePathBuf) -> bool {
+    path.as_os_str().to_string_lossy().contains('*')
+}
+
+fn wildcard_path_matches(pattern: &AbsolutePathBuf, path: &AbsolutePathBuf) -> bool {
+    let pattern = pattern.as_os_str().to_string_lossy();
+    let path = path.as_os_str().to_string_lossy();
+    let pattern = pattern.as_bytes();
+    let path = path.as_bytes();
+    let mut pattern_index = 0;
+    let mut path_index = 0;
+    let mut last_wildcard = None;
+    let mut wildcard_path_index = 0;
+
+    while path_index < path.len() {
+        if pattern.get(pattern_index) == path.get(path_index) {
+            pattern_index += 1;
+            path_index += 1;
+        } else if pattern.get(pattern_index) == Some(&b'*') {
+            last_wildcard = Some(pattern_index);
+            pattern_index += 1;
+            wildcard_path_index = path_index;
+        } else if let Some(wildcard_index) = last_wildcard {
+            pattern_index = wildcard_index + 1;
+            wildcard_path_index += 1;
+            path_index = wildcard_path_index;
+        } else {
+            return false;
+        }
+    }
+
+    while pattern.get(pattern_index) == Some(&b'*') {
+        pattern_index += 1;
+    }
+    pattern_index == pattern.len()
 }
 
 /// Returns whether bundled skills are enabled by the effective configuration.
@@ -187,9 +238,14 @@ pub fn skill_config_rules_from_stack(config_layer_stack: &ConfigLayerStack) -> S
 
 fn skill_config_rule_selector(entry: &SkillConfig) -> Option<SkillConfigRuleSelector> {
     match (entry.path.as_ref(), entry.name.as_deref()) {
-        (Some(path), None) => Some(SkillConfigRuleSelector::Path(
-            path.canonicalize().unwrap_or_else(|_| path.clone()),
-        )),
+        (Some(path), None) => {
+            let path = if path_contains_wildcard(path) {
+                path.clone()
+            } else {
+                path.canonicalize().unwrap_or_else(|_| path.clone())
+            };
+            Some(SkillConfigRuleSelector::Path(path))
+        }
         (None, Some(name)) => {
             let name = name.trim();
             if name.is_empty() {

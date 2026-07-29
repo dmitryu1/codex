@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
 use anyhow::Result;
+use codex_config::ConfigLayerStack;
 use codex_core::StartIfIdleSubmission;
 use codex_core::TurnInput;
 use codex_core::TurnInputRequest;
@@ -483,6 +484,66 @@ async fn idle_user_turn_includes_skill_instructions_in_the_first_request() -> Re
                 && text.contains(skill_path_str.as_ref())
         }),
         "expected queued skill instructions in the first request, got {user_texts:?}"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wildcard_path_config_disables_matching_repo_skill() -> Result<()> {
+    skip_if_wine_exec!(
+        Ok(()),
+        "skill paths require matching host and executor path conventions"
+    );
+    skip_if_no_network!(Ok(()));
+
+    let server = start_mock_server().await;
+    let mut builder = test_codex()
+        .with_workspace_setup(|cwd, fs| async move {
+            write_repo_skill(
+                cwd,
+                fs,
+                "wildcard-disabled",
+                "wildcard disabled description",
+                "wildcard disabled body",
+            )
+            .await
+        })
+        .with_config(|config| {
+            let cwd_parent = config.cwd.parent().expect("cwd should have a parent");
+            let wildcard_path = cwd_parent.join("*/.agents/skills/*");
+            let config_toml = format!(
+                r#"[[skills.config]]
+path = "{}"
+enabled = false
+"#,
+                wildcard_path.display()
+            );
+            let user_config_path = config.codex_home.join("config.toml");
+            config.config_layer_stack = ConfigLayerStack::default()
+                .with_user_config(
+                    &user_config_path,
+                    toml::from_str(&config_toml).expect("skills config should parse"),
+                )
+                .expect("skills user config should be valid");
+        });
+    let test = builder.build_with_auto_env(&server).await?;
+    let mock = mount_sse_once(
+        &server,
+        sse(vec![
+            ev_response_created("resp-1"),
+            ev_assistant_message("msg-1", "done"),
+            ev_completed("resp-1"),
+        ]),
+    )
+    .await;
+
+    test.submit_turn("hello").await?;
+
+    let request = mock.single_request();
+    assert!(
+        !request.body_contains_text("wildcard disabled description"),
+        "disabled skill should not be included in the model-visible skills catalog"
     );
 
     Ok(())

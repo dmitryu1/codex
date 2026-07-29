@@ -4162,7 +4162,7 @@
               "$ref": "#/definitions/AbsolutePathBuf"
             }
           ],
-          "description": "Path-based selector."
+          "description": "Absolute path selector. `*` matches any sequence of characters, including path separators."
         }
       },
       "required": [

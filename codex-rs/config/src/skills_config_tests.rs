@@ -240,3 +240,42 @@ fn later_path_rule_reenables_one_skill_disabled_by_name() {
         [second_path].into_iter().collect()
     );
 }
+
+#[test]
+fn wildcard_path_rule_disables_matching_skills_and_allows_exact_override() {
+    let codex_home = TempDir::new().expect("temp dir");
+    let first_path = codex_home
+        .path()
+        .join("repo-a/.agents/skills/first/SKILL.md")
+        .abs();
+    let second_path = codex_home
+        .path()
+        .join("repo-b/.agents/skills/second/SKILL.md")
+        .abs();
+    let outside_path = codex_home
+        .path()
+        .join(".agents/skills/outside/SKILL.md")
+        .abs();
+    let wildcard_path = codex_home.path().join("*/.agents/skills/*").abs();
+    let rules = SkillConfigRules {
+        entries: vec![
+            SkillConfigRule {
+                selector: SkillConfigRuleSelector::Path(wildcard_path),
+                enabled: false,
+            },
+            SkillConfigRule {
+                selector: SkillConfigRuleSelector::Path(first_path.clone()),
+                enabled: true,
+            },
+        ],
+    };
+
+    assert_eq!(
+        rules.resolve_disabled_paths([
+            ("first", &first_path),
+            ("second", &second_path),
+            ("outside", &outside_path),
+        ]),
+        [second_path].into_iter().collect()
+    );
+}
